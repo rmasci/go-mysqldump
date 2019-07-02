@@ -3,6 +3,7 @@ package mysqldump
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path"
 	"strings"
@@ -10,96 +11,94 @@ import (
 	"time"
 )
 
-type table struct {
+type Table struct {
 	Name   string
 	SQL    string
 	Values string
 }
 
-type dump struct {
+type Dump struct {
 	DumpVersion   string
 	ServerVersion string
-	Tables        []*table
+	Tables        []*Table
 	CompleteTime  string
+	Database      string
+	DbDrop        string
 }
 
-const version = "0.2.2"
+const version = "0.2.0"
 
 const tmpl = `-- Go SQL Dump {{ .DumpVersion }}
 --
 -- ------------------------------------------------------
 -- Server version	{{ .ServerVersion }}
+{{ .DbDrop }}
 
-/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
-/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
-/*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
-/*!40101 SET NAMES utf8 */;
-/*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;
-/*!40103 SET TIME_ZONE='+00:00' */;
-/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;
-/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
-/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
-/*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
-
-
+USE {{ .Database }};
 {{range .Tables}}
 --
 -- Table structure for table {{ .Name }}
 --
 
 DROP TABLE IF EXISTS {{ .Name }};
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!40101 SET character_set_client = utf8 */;
 {{ .SQL }};
-/*!40101 SET character_set_client = @saved_cs_client */;
+{{ if .Values }}
 --
 -- Dumping data for table {{ .Name }}
 --
 
 LOCK TABLES {{ .Name }} WRITE;
-/*!40000 ALTER TABLE {{ .Name }} DISABLE KEYS */;
-{{ if .Values }}
 INSERT INTO {{ .Name }} VALUES {{ .Values }};
-{{ end }}
-/*!40000 ALTER TABLE {{ .Name }} ENABLE KEYS */;
 UNLOCK TABLES;
-{{ end }}
+{{end}}{{ end }}
 -- Dump completed on {{ .CompleteTime }}
 `
 
 // Creates a MYSQL Dump based on the options supplied through the dumper.
 func (d *Dumper) Dump() (string, error) {
-	name := time.Now().Format(d.format)
-	p := path.Join(d.dir, name+".sql")
+	if d.FileName == "" {
+		name := time.Now().Format(d.format)
+		d.FileName = path.Join(d.dir, name+".sql")
+	}
 
-	// Check dump directory
-	if e, _ := exists(p); e {
-		return p, errors.New("Dump '" + name + "' already exists.")
+	var database string
+	var dbdrop string
+
+	if e, _ := exists(d.FileName); e {
+		return d.FileName, errors.New("Dump '" + d.FileName + "' already exists.")
 	}
 
 	// Create .sql file
-	f, err := os.Create(p)
+	f, err := os.Create(d.FileName)
 
 	if err != nil {
-		return p, err
+		return d.FileName, err
 	}
 
 	defer f.Close()
 
-	data := dump{
+	data := Dump{
 		DumpVersion: version,
-		Tables:      make([]*table, 0),
+		Tables:      make([]*Table, 0),
+		Database:    database,
+		DbDrop:      dbdrop,
 	}
 
 	// Get server version
 	if data.ServerVersion, err = getServerVersion(d.db); err != nil {
-		return p, err
+		return d.FileName, err
 	}
 
+	if data.Database, err = getDatabase(d.db); err != nil {
+		return d.FileName, err
+	}
+	if d.DropDB {
+		data.DbDrop = fmt.Sprintf("DROP DATABASE IF EXISTS %s;\nCREATE DATABASE %s;SET FOREIGN_KEY_CHECKS=0;", data.Database, data.Database)
+	}
 	// Get tables
 	tables, err := getTables(d.db)
 	if err != nil {
-		return p, err
+		return d.FileName, err
 	}
 
 	// Get sql for each table
@@ -107,7 +106,7 @@ func (d *Dumper) Dump() (string, error) {
 		if t, err := createTable(d.db, name); err == nil {
 			data.Tables = append(data.Tables, t)
 		} else {
-			return p, err
+			return d.FileName, err
 		}
 	}
 
@@ -117,26 +116,93 @@ func (d *Dumper) Dump() (string, error) {
 	// Write dump to file
 	t, err := template.New("mysqldump").Parse(tmpl)
 	if err != nil {
-		return p, err
+		return d.FileName, err
 	}
 	if err = t.Execute(f, data); err != nil {
-		return p, err
+		return d.FileName, err
 	}
 
-	return p, nil
+	return d.FileName, nil
+}
+
+func (d *Dumper) DumpTables(tables []string) (string, error) {
+	if d.FileName == "" {
+		name := time.Now().Format(d.format)
+		d.FileName = path.Join(d.dir, name+".sql")
+	}
+
+	var dumpTables []*Table
+	var database string
+	var dbdrop string
+
+	// Check dump directory
+	if e, _ := exists(d.FileName); e {
+		return d.FileName, errors.New("Dump '" + d.FileName + "' already exists.")
+	}
+
+	// Create .sql file
+	f, err := os.Create(d.FileName)
+
+	if err != nil {
+		return d.FileName, err
+	}
+
+	defer f.Close()
+
+	data := Dump{
+		DumpVersion: version,
+		Tables:      dumpTables,
+		Database:    database,
+		DbDrop:      dbdrop,
+	}
+
+	// Get server version
+	if data.ServerVersion, err = getServerVersion(d.db); err != nil {
+		return d.FileName, err
+	}
+
+	// Set data.DbDrop to nothing since we're only working with one or more tables.
+	data.DbDrop = ""
+
+	if data.Database, err = getDatabase(d.db); err != nil {
+		return d.FileName, err
+	}
+
+	// Get sql for each table
+	for _, name := range tables {
+		if t, err := createTable(d.db, name); err == nil {
+			data.Tables = append(data.Tables, t)
+		} else {
+			return d.FileName, err
+		}
+	}
+
+	// Set complete time
+	data.CompleteTime = time.Now().String()
+
+	// Write dump to file
+	t, err := template.New("mysqldump").Parse(tmpl)
+	if err != nil {
+		return d.FileName, err
+	}
+	if err = t.Execute(f, data); err != nil {
+		return d.FileName, err
+	}
+
+	return d.FileName, nil
 }
 
 func getTables(db *sql.DB) ([]string, error) {
 	tables := make([]string, 0)
-
 	// Get table list
-	rows, err := db.Query("SHOW TABLES")
+	tQuery := fmt.Sprintf("SHOW TABLES")
+	rows, err := db.Query(tQuery)
 	if err != nil {
 		return tables, err
 	}
 	defer rows.Close()
 
-	// Read result
+	// Result
 	for rows.Next() {
 		var table sql.NullString
 		if err := rows.Scan(&table); err != nil {
@@ -144,6 +210,7 @@ func getTables(db *sql.DB) ([]string, error) {
 		}
 		tables = append(tables, table.String)
 	}
+
 	return tables, rows.Err()
 }
 
@@ -155,9 +222,18 @@ func getServerVersion(db *sql.DB) (string, error) {
 	return server_version.String, nil
 }
 
-func createTable(db *sql.DB, name string) (*table, error) {
+func getDatabase(db *sql.DB) (string, error) {
+	var server_database sql.NullString
+	if err := db.QueryRow("SELECT database()").Scan(&server_database); err != nil {
+		return "", err
+	}
+
+	return server_database.String, nil
+}
+
+func createTable(db *sql.DB, name string) (*Table, error) {
 	var err error
-	t := &table{Name: name}
+	t := &Table{Name: name}
 
 	if t.SQL, err = createTableSQL(db, name); err != nil {
 		return nil, err
@@ -226,13 +302,11 @@ func createTableValues(db *sql.DB, name string) (string, error) {
 
 		for key, value := range data {
 			if value != nil && value.Valid {
-				dataStrings[key] = "'" + value.String + "'"
-			} else {
-				dataStrings[key] = "null"
+				dataStrings[key] = value.String
 			}
 		}
 
-		data_text = append(data_text, "("+strings.Join(dataStrings, ",")+")")
+		data_text = append(data_text, "('"+strings.Join(dataStrings, "','")+"')")
 	}
 
 	return strings.Join(data_text, ","), rows.Err()

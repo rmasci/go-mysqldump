@@ -8,9 +8,12 @@ import (
 
 // Dumper represents a database.
 type Dumper struct {
-	db     *sql.DB
-	format string
-	dir    string
+	db       *sql.DB
+	format   string
+	dir      string
+	FileName string
+	All      bool
+	DropDB   bool
 }
 
 /*
