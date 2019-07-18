@@ -54,6 +54,30 @@ UNLOCK TABLES;
 -- Dump completed on {{ .CompleteTime }}
 `
 
+const tmplPart = `-- Go SQL Dump {{ .DumpVersion }}
+--
+-- ------------------------------------------------------
+-- Server version	{{ .ServerVersion }}
+{{ .DbDrop }}
+
+USE {{ .Database }};
+{{range .Tables}}
+--
+-- Table structure for table {{ .Name }}
+--
+
+{{ if .Values }}
+--
+-- Dumping data for table {{ .Name }}
+--
+
+LOCK TABLES {{ .Name }} WRITE;
+INSERT INTO {{ .Name }} VALUES {{ .Values }};
+UNLOCK TABLES;
+{{end}}{{ end }}
+-- Dump completed on {{ .CompleteTime }}
+`
+
 // Creates a MYSQL Dump based on the options supplied through the dumper.
 func (d *Dumper) Dump() (string, error) {
 	if d.FileName == "" {
@@ -125,7 +149,7 @@ func (d *Dumper) Dump() (string, error) {
 	return d.FileName, nil
 }
 
-func (d *Dumper) DumpTables(tables []string) (string, error) {
+func (d *Dumper) DumpTables(tables []string, where string) (string, error) {
 	if d.FileName == "" {
 		name := time.Now().Format(d.format)
 		d.FileName = path.Join(d.dir, name+".sql")
@@ -155,7 +179,7 @@ func (d *Dumper) DumpTables(tables []string) (string, error) {
 		Database:    database,
 		DbDrop:      dbdrop,
 	}
-
+	var tmplSql string
 	// Get server version
 	if data.ServerVersion, err = getServerVersion(d.db); err != nil {
 		return d.FileName, err
@@ -170,18 +194,31 @@ func (d *Dumper) DumpTables(tables []string) (string, error) {
 
 	// Get sql for each table
 	for _, name := range tables {
-		if t, err := createTable(d.db, name); err == nil {
-			data.Tables = append(data.Tables, t)
+		if where != "" {
+			if t, err := createPartTable(d.db, name, where); err == nil {
+				data.Tables = append(data.Tables, t)
+			} else {
+				return d.FileName, err
+			}
 		} else {
-			return d.FileName, err
+			if t, err := createTable(d.db, name); err == nil {
+				data.Tables = append(data.Tables, t)
+			} else {
+				return d.FileName, err
+			}
+
 		}
 	}
 
 	// Set complete time
 	data.CompleteTime = time.Now().String()
-
+	if where == "" {
+		tmplSql = tmpl
+	} else {
+		tmplSql = tmplPart
+	}
 	// Write dump to file
-	t, err := template.New("mysqldump").Parse(tmpl)
+	t, err := template.New("mysqldump").Parse(tmplSql)
 	if err != nil {
 		return d.FileName, err
 	}
@@ -246,6 +283,21 @@ func createTable(db *sql.DB, name string) (*Table, error) {
 	return t, nil
 }
 
+func createPartTable(db *sql.DB, name, where string) (*Table, error) {
+	var err error
+	t := &Table{Name: name}
+
+	//if t.SQL, err = createTableSQL(db, name); err != nil {
+	//	return nil, err
+	//}
+
+	if t.Values, err = createPartTableValues(db, name, where); err != nil {
+		return nil, err
+	}
+
+	return t, nil
+}
+
 func createTableSQL(db *sql.DB, name string) (string, error) {
 	// Get table creation SQL
 	var table_return sql.NullString
@@ -265,6 +317,57 @@ func createTableSQL(db *sql.DB, name string) (string, error) {
 func createTableValues(db *sql.DB, name string) (string, error) {
 	// Get Data
 	rows, err := db.Query("SELECT * FROM " + name)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	// Get columns
+	columns, err := rows.Columns()
+	if err != nil {
+		return "", err
+	}
+	if len(columns) == 0 {
+		return "", errors.New("No columns in table " + name + ".")
+	}
+
+	// Read data
+	data_text := make([]string, 0)
+	for rows.Next() {
+		// Init temp data storage
+
+		//ptrs := make([]interface{}, len(columns))
+		//var ptrs []interface {} = make([]*sql.NullString, len(columns))
+
+		data := make([]*sql.NullString, len(columns))
+		ptrs := make([]interface{}, len(columns))
+		for i, _ := range data {
+			ptrs[i] = &data[i]
+		}
+
+		// Read data
+		if err := rows.Scan(ptrs...); err != nil {
+			return "", err
+		}
+
+		dataStrings := make([]string, len(columns))
+
+		for key, value := range data {
+			if value != nil && value.Valid {
+				dataStrings[key] = value.String
+			}
+		}
+
+		data_text = append(data_text, "('"+strings.Join(dataStrings, "','")+"')")
+	}
+
+	return strings.Join(data_text, ","), rows.Err()
+}
+
+func createPartTableValues(db *sql.DB, name, where string) (string, error) {
+	// Get Data
+	queryStr := fmt.Sprintf("SELECT * FROM %s WHERE %s", name, where)
+	rows, err := db.Query(queryStr)
 	if err != nil {
 		return "", err
 	}
