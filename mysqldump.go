@@ -1,49 +1,85 @@
 package mysqldump
 
 import (
+	"compress/gzip"
 	"database/sql"
 	"errors"
+	"fmt"
+	"io"
 	"os"
+	"path"
+	"time"
 )
 
-// Dumper represents a database.
-type Dumper struct {
-	db       *sql.DB
-	format   string
-	dir      string
-	FileName string
-	All      bool
-	DropDB   bool
-}
-
 /*
-Creates a new dumper.
+Register a new dumper.
 
 	db: Database that will be dumped (https://golang.org/pkg/database/sql/#DB).
 	dir: Path to the directory where the dumps will be stored.
 	format: Format to be used to name each dump file. Uses time.Time.Format (https://golang.org/pkg/time/#Time.Format). format appended with '.sql'.
 */
-func Register(db *sql.DB, dir, format string) (*Dumper, error) {
-	if !isDir(dir) {
-		return nil, errors.New("Invalid directory")
+func Register(db *sql.DB, gzipdump bool, a ...interface{}) (*Data, string, error) {
+	var p, name string
+	if len(a) <= 0 {
+		dir := "/var/tmp/"
+		format := "20060102-1504"
+		name = fmt.Sprintf("sqldump-%v", time.Now().Format(format))
+		p = path.Join(dir, name+".sql")
+	} else {
+		p = fmt.Sprintf("%v", a[0])
+	}
+	// Check dump directory
+	if e, _ := exists(p); e {
+		return nil, p, errors.New("Dump '" + p + "' already exists.")
 	}
 
-	return &Dumper{
-		db:     db,
-		format: format,
-		dir:    dir,
-	}, nil
+	if gzipdump {
+		p=fmt.Sprintf("%s.gz", p)
+		// Create .sql file
+		f, err := os.Create(p)
+		if err != nil {
+			return nil, p, err
+		}
+		gz:=gzip.NewWriter(f)
+
+		return &Data{
+			FileName: p,
+			GzipDump: true,
+			Out:        gz,
+			Connection: db,
+		}, p, nil
+	}
+	f, err := os.Create(p)
+	if err != nil {
+		return nil, p, err
+	}
+	return &Data{
+		Out:        f,
+		Connection: db,
+	}, p, nil
 }
 
-// Closes the dumper.
-// Will also close the database the dumper is connected to.
+// Dump Creates a MYSQL dump from the connection to the stream.
+func Dump(db *sql.DB, out io.Writer) error {
+	return (&Data{
+		Connection: db,
+		Out:        out,
+	}).Dump()
+}
+
+// Close the dumper.
+// Will also close the database the dumper is connected to as well as the out stream if it has a Close method.
 //
 // Not required.
-func (d *Dumper) Close() error {
+func (d *Data) Close() error {
 	defer func() {
-		d.db = nil
+		d.Connection = nil
+		d.Out = nil
 	}()
-	return d.db.Close()
+	if out, ok := d.Out.(io.Closer); ok {
+		out.Close()
+	}
+	return d.Connection.Close()
 }
 
 func exists(p string) (bool, os.FileInfo) {
@@ -57,13 +93,6 @@ func exists(p string) (bool, os.FileInfo) {
 		return false, nil
 	}
 	return true, fi
-}
-
-func isFile(p string) bool {
-	if e, fi := exists(p); e {
-		return fi.Mode().IsRegular()
-	}
-	return false
 }
 
 func isDir(p string) bool {
