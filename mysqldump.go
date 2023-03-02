@@ -32,23 +32,28 @@ func Register(db *sql.DB, gzipdump bool, a ...interface{}) (*Data, string, error
 	if e, _ := exists(p); e {
 		return nil, p, errors.New("Dump '" + p + "' already exists.")
 	}
-
+	dbname, err := getDBName(db)
+	if err != nil {
+		return nil, p, err
+	}
 	if gzipdump {
-		p=fmt.Sprintf("%s.gz", p)
+		p = fmt.Sprintf("%s.gz", p)
 		// Create .sql file
 		f, err := os.Create(p)
 		if err != nil {
 			return nil, p, err
 		}
-		gz:=gzip.NewWriter(f)
+		gz := gzip.NewWriter(f)
 
 		return &Data{
-			FileName: p,
-			GzipDump: true,
+			FileName:   p,
+			GzipDump:   true,
 			Out:        gz,
 			Connection: db,
+			DBName:     dbname,
 		}, p, nil
 	}
+
 	f, err := os.Create(p)
 	if err != nil {
 		return nil, p, err
@@ -56,15 +61,16 @@ func Register(db *sql.DB, gzipdump bool, a ...interface{}) (*Data, string, error
 	return &Data{
 		Out:        f,
 		Connection: db,
+		DBName:     dbname,
 	}, p, nil
 }
 
 // Dump Creates a MYSQL dump from the connection to the stream.
-func Dump(db *sql.DB, out io.Writer) error {
+func Dump(db *sql.DB, out io.Writer, a ...interface{}) error {
 	return (&Data{
 		Connection: db,
 		Out:        out,
-	}).Dump()
+	}).Dump(a...)
 }
 
 // Close the dumper.

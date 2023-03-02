@@ -1,12 +1,14 @@
 package mysqldump
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"reflect"
 	"strings"
 	"text/template"
@@ -21,9 +23,14 @@ Data struct to configure dump behavior
 	IgnoreTables:     Mark sensitive tables to ignore
 	MaxAllowedPacket: Sets the largest packet size to use in backups
 	LockTables:       Lock all tables for the duration of the dump
+	UseDB: Insert use db into dumpfile
 */
 type Data struct {
 	Out              io.Writer
+	ZOut             *zip.Writer
+	ZFile            *os.File
+	DBName           string
+	UseDB            bool
 	Connection       *sql.DB
 	IgnoreTables     []string
 	GzipDump         bool
@@ -41,6 +48,7 @@ type Data struct {
 
 type table struct {
 	Name   string
+	DBName string
 	Err    error
 	data   *Data
 	rows   *sql.Rows
@@ -97,7 +105,7 @@ const tableTmpl = `
 --
 -- Table structure for table {{ .NameEsc }}
 --
-
+USE {{ .DBName }};
 DROP TABLE IF EXISTS {{ .NameEsc }};
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
  SET character_set_client = utf8mb4 ;
@@ -275,6 +283,15 @@ func (data *Data) getTemplates() (err error) {
 	return
 }
 
+func getDBName(db *sql.DB) (string, error) {
+	var databaseName sql.NullString
+	err := db.QueryRow("SELECT database()").Scan(&databaseName)
+	if err != nil {
+		return "", err
+	}
+	return databaseName.String, nil
+}
+
 func (data *Data) getTables() ([]string, error) {
 	tables := make([]string, 0)
 
@@ -316,8 +333,9 @@ func (meta *metaData) updateServerVersion(data *Data) (err error) {
 
 func (data *Data) createTable(name string) *table {
 	return &table{
-		Name: name,
-		data: data,
+		Name:   name,
+		data:   data,
+		DBName: data.DBName,
 	}
 }
 
