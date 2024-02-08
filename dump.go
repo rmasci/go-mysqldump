@@ -464,15 +464,14 @@ func (table *table) RowBuffer() *bytes.Buffer {
 
 	return &b
 }
+
 func (table *table) Stream() <-chan string {
 	valueOut := make(chan string, 1)
-	rowCount := 0 // counter for rows
 	go func() {
 		defer close(valueOut)
 		var insert bytes.Buffer
 
 		for table.Next() {
-			rowCount++ // increment the counter
 			b := table.RowBuffer()
 			// Truncate our insert if it won't fit
 			if insert.Len() != 0 && insert.Len()+b.Len() > table.data.MaxAllowedPacket-1 {
@@ -493,36 +492,5 @@ func (table *table) Stream() <-chan string {
 			valueOut <- insert.String()
 		}
 	}()
-	fmt.Printf(" Rows: %d ", rowCount)
 	return valueOut
 }
-
-//func (table *table) Stream() <-chan string {
-//	valueOut := make(chan string, 1)
-//	go func() {
-//		defer close(valueOut)
-//		var insert bytes.Buffer
-//
-//		for table.Next() {
-//			b := table.RowBuffer()
-//			// Truncate our insert if it won't fit
-//			if insert.Len() != 0 && insert.Len()+b.Len() > table.data.MaxAllowedPacket-1 {
-//				insert.WriteString(";")
-//				valueOut <- insert.String()
-//				insert.Reset()
-//			}
-//
-//			if insert.Len() == 0 {
-//				fmt.Fprintf(&insert, "INSERT INTO %s VALUES ", table.NameEsc())
-//			} else {
-//				insert.WriteString(",")
-//			}
-//			b.WriteTo(&insert)
-//		}
-//		if insert.Len() != 0 {
-//			insert.WriteString(";")
-//			valueOut <- insert.String()
-//		}
-//	}()
-//	return valueOut
-//}
