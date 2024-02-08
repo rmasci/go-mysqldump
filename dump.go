@@ -47,14 +47,12 @@ type Data struct {
 }
 
 type table struct {
-	Name        string
-	DBName      string
-	Err         error
-	data        *Data
-	rows        *sql.Rows
-	values      []interface{}
-	Count       int64
-	PrintTables bool
+	Name   string
+	DBName string
+	Err    error
+	data   *Data
+	rows   *sql.Rows
+	values []interface{}
 }
 
 type metaData struct {
@@ -208,9 +206,9 @@ func (data *Data) Dump(a ...interface{}) error {
 	}
 
 	for _, name := range tables {
-		//if data.PrintTables {
-		//fmt.Printf("Dumping %s ", name)
-		//}
+		if data.PrintTables {
+			fmt.Printf("Dumping %s ", name)
+		}
 		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
@@ -254,7 +252,6 @@ func (data *Data) dumpTable(name string) error {
 		return data.err
 	}
 	table := data.createTable(name)
-	table.PrintTables = data.PrintTables
 	return data.writeTable(table)
 }
 
@@ -411,7 +408,6 @@ func (table *table) Next() bool {
 	}
 	// Fallthrough
 	if table.rows.Next() {
-		table.Count++
 		if err := table.rows.Scan(table.values...); err != nil {
 			table.Err = err
 			return false
@@ -468,14 +464,15 @@ func (table *table) RowBuffer() *bytes.Buffer {
 
 	return &b
 }
-
 func (table *table) Stream() <-chan string {
 	valueOut := make(chan string, 1)
+	rowCount := 0 // counter for rows
 	go func() {
 		defer close(valueOut)
 		var insert bytes.Buffer
 
 		for table.Next() {
+			rowCount++ // increment the counter
 			b := table.RowBuffer()
 			// Truncate our insert if it won't fit
 			if insert.Len() != 0 && insert.Len()+b.Len() > table.data.MaxAllowedPacket-1 {
@@ -491,13 +488,41 @@ func (table *table) Stream() <-chan string {
 			}
 			b.WriteTo(&insert)
 		}
-		if table.PrintTables {
-			fmt.Printf("%s: Dump %d rows\n", table.Name, table.Count)
-		}
 		if insert.Len() != 0 {
 			insert.WriteString(";")
 			valueOut <- insert.String()
 		}
 	}()
+	fmt.Printf(" Rows: %d ", rowCount)
 	return valueOut
 }
+
+//func (table *table) Stream() <-chan string {
+//	valueOut := make(chan string, 1)
+//	go func() {
+//		defer close(valueOut)
+//		var insert bytes.Buffer
+//
+//		for table.Next() {
+//			b := table.RowBuffer()
+//			// Truncate our insert if it won't fit
+//			if insert.Len() != 0 && insert.Len()+b.Len() > table.data.MaxAllowedPacket-1 {
+//				insert.WriteString(";")
+//				valueOut <- insert.String()
+//				insert.Reset()
+//			}
+//
+//			if insert.Len() == 0 {
+//				fmt.Fprintf(&insert, "INSERT INTO %s VALUES ", table.NameEsc())
+//			} else {
+//				insert.WriteString(",")
+//			}
+//			b.WriteTo(&insert)
+//		}
+//		if insert.Len() != 0 {
+//			insert.WriteString(";")
+//			valueOut <- insert.String()
+//		}
+//	}()
+//	return valueOut
+//}
