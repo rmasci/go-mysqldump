@@ -47,12 +47,14 @@ type Data struct {
 }
 
 type table struct {
-	Name   string
-	DBName string
-	Err    error
-	data   *Data
-	rows   *sql.Rows
-	values []interface{}
+	Name        string
+	DBName      string
+	Err         error
+	data        *Data
+	rows        *sql.Rows
+	values      []interface{}
+	Count       int64
+	PrintTables bool
 }
 
 type metaData struct {
@@ -206,9 +208,9 @@ func (data *Data) Dump(a ...interface{}) error {
 	}
 
 	for _, name := range tables {
-		if data.PrintTables {
-			fmt.Printf("Dumping %s ", name)
-		}
+		//if data.PrintTables {
+		//fmt.Printf("Dumping %s ", name)
+		//}
 		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
@@ -252,6 +254,7 @@ func (data *Data) dumpTable(name string) error {
 		return data.err
 	}
 	table := data.createTable(name)
+	table.PrintTables = data.PrintTables
 	return data.writeTable(table)
 }
 
@@ -408,6 +411,7 @@ func (table *table) Next() bool {
 	}
 	// Fallthrough
 	if table.rows.Next() {
+		table.Count++
 		if err := table.rows.Scan(table.values...); err != nil {
 			table.Err = err
 			return false
@@ -486,6 +490,9 @@ func (table *table) Stream() <-chan string {
 				insert.WriteString(",")
 			}
 			b.WriteTo(&insert)
+		}
+		if table.PrintTables {
+			fmt.Printf("%s: Dump %d rows\n", table.Name, table.Count)
 		}
 		if insert.Len() != 0 {
 			insert.WriteString(";")
